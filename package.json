@@ -1,5 +1,5 @@
 {
-  "name": "strongmap",
+  "name": "node-strongmap",
   "version": "1.0.1",
   "description": "JavaScript Map meets your Hard Disk",
   "main": "src/entry.js",
