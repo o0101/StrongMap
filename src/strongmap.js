@@ -6,10 +6,14 @@ import JSON36 from 'json36';
 
 const DEBUG = false;
 
+const MAGIC_PREFIX = "SMV";
 const VERSION = "1.0";
-const VERSION_STRING = "SMV" + VERSION;
+const VERSION_STRING = MAGIC_PREFIX + VERSION;
 const INITIAL_RECORD_LENGTH = 128;
+const RECORD_MODE = 0o600;
 const HashTable = Map; // could also be WeakMap
+const {O_RDWR, O_NOATIME, O_NOFOLLOW, O_DSYNC, O_DIRECT} = fs.constants;
+const RECORD_OPEN_MODE = O_RDWR | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
 
 class StrongMap extends HashTable {};
 const GeneralFunction = function(...a) { return a; }
@@ -76,7 +80,7 @@ const N = Symbol('[[Name]]');
         const {path,fileName,recordId, keyString} = locate(key, this.handler);
         const valueString = JSON36.stringify(value);
         console.log({path,fileName,recordId,keyString,valueString});
-        create(path,fileName,recordId,keyString,valueString);
+        const result = create(path,fileName,recordId,keyString,valueString, this.handler);
         return this.target.set(key, value);  
       }
 
@@ -86,7 +90,8 @@ const N = Symbol('[[Name]]');
       }
 
       get(key) {
-        const {path,fileName,recordId} = locate(key, this.handler);
+        const {path,fileName,recordId,keyString} = locate(key, this.handler);
+        const result = retrieve(path, fileName, recordId, keyString, this.handler);
         return this.target.get(key);
       }
 
@@ -147,14 +152,19 @@ const StrongMapStaticAPI = new Proxy(StrongMap, new StaticAPIHandler());
 export default StrongMapStaticAPI;
 
 // record helpers
-  function locate(key, handler) {
-    const keyString = JSON36.stringify(key);
+  function getName(handler) {
     let name = handler[N];
 
     if ( ! name ) {
       name = handler[N] = newRandomName();
     }
 
+    return name;
+  }
+
+  function locate(key, handler) {
+    const keyString = JSON36.stringify(key);
+    const name = getName(handler);
     const hash = discohash(keyString).toString(16).padStart(16, '0');
     const parts = ['dicts', name, 'keys', hash.slice(0,2), hash.slice(2,4), hash.slice(4,6)];
     const path = Path.resolve(...parts)
@@ -164,16 +174,16 @@ export default StrongMapStaticAPI;
     return {path, parts, fileName, recordId, keyString};
   }
 
-  function retrieve(path, fileName, recordId, keyString) {
+  function retrieve(path, fileName, recordId, keyString, handler) {
     const fullPath = Path.resolve(path, fileName);
     if ( ! fs.existsSync(fullPath) ) {
       return undefined; 
     } else {
-      return getRecord(path, fileName, recordId, keyString);
+      return getRecord(path, fileName, recordId, keyString, handler);
     }
   }
 
-  function create(path, fileName, recordId, keyString, valueString) {
+  function create(path, fileName, recordId, keyString, valueString, handler) {
     const dirPath = Path.resolve(path);
     const fullPath = Path.resolve(dirPath, fileName);
     if ( ! fs.existsSync(dirPath) ) {
@@ -181,16 +191,18 @@ export default StrongMapStaticAPI;
     }
 
     if ( ! fs.existsSync(fullPath) ) {
-      createEmptyRecordFile(fullPath);
+      createEmptyRecordFile(fullPath, handler);
     }
 
-    createRecord(path, fileName, recordId, keyString, valueString);
+    createRecord(fullPath, recordId, keyString, valueString, handler);
   }
 
-  function createEmptyRecordFile(fullPath, name) {
+  function createEmptyRecordFile(fullPath, handler) {
     const SLOT_COUNT = 1;
     const RECORD_COUNT = 0;
     const recordLength = INITIAL_RECORD_LENGTH;
+
+    const name = getName(handler);
 
     const header = [
       VERSION_STRING,
@@ -200,22 +212,99 @@ export default StrongMapStaticAPI;
       SLOT_COUNT
     ];
 
-    const headerLine = header.join(' ');
-    const slotLine = newBlankSlot(recordLength);
+    const headerLine = header.join(' ').padEnd(recordLength-1, ' ');
+    const slotLine = newBlankSlot(recordLength-1);
+    const record = [
+      headerLine,
+      slotLine
+    ].join('\n') + '\n';
 
     // write the file
+    const fd = fs.openSync(fullPath, 'ax', RECORD_MODE); 
+    fs.writeSync(fd, record, 0, record.length, );
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
   }
 
-  function newBlankSlot(len) {
-    let str = '';
-    for( let i = 0; i < len; i++ ) {
-      str += ' ';
-    }
-    return str;
+  function createRecord(fullPath, recordId, keyString, valueString, handler) {
+    const fd = fs.openSync(fullPath, RECORD_OPEN_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+
+    // check integrity and extract header information
+      const PossibleRecordLength = INITIAL_RECORD_LENGTH;
+      const HeaderBuf = Buffer.alloc(PossibleRecordLength);
+
+      fs.readSync(fd, HeaderBuf, 0, PossibleRecordLength, 0);
+      fs.fdatasyncSync(fd);    // boss level
+
+      const dictName = getName(handler);
+
+      const Header = HeaderBuf.toString().split(/\s+/g);
+      const [ 
+        VERSION_STRING,
+        name,
+        RECORD_LENGTH,
+        RECORD_COUNT,
+        SLOT_COUNT
+      ] = Header;
+
+      // we don't actually check version number (for now)
+      if ( !VERSION_STRING.startsWith(MAGIC_PREFIX) ) {
+        console.warn({
+          fullPath, recordId, dictName, VERSION_STRING, name, Header
+        });
+        throw new TypeError('Incorrect header in record');
+      }
+
+      if ( name !== dictName ) {
+        console.warn({
+          fullPath, recordId, dictName, VERSION_STRING, name, Header
+        });
+        throw new TypeError('Incorrect dict name in record');
+      }
+
+      let slotCount, recordCount, recordLength;
+      let newSlotCount, newRecordCount, newRecordLength;
+
+      slotCount = newSlotCount = parseInt(SLOT_COUNT);
+      recordCount = newRecordCount = parseInt(RECORD_COUNT);
+      recordLength = newRecordLength = parseInt(recordLength);
+
+    // write the record
+      const record = [
+        recordId,
+        keyString,
+        valueString
+      ].join(' ').padEnd(recordLength-1, ' ') + '\n';
+
+      // check length is OK
+        if ( record.length > recordLength ) {
+          DEBUG && console.info(`Update record length: ${JSON.stringify({
+            newRecordLengthAtLeast: record.length,
+            recordLength
+          })}`);
+
+          newRecordLength = Math.ceil(record.length * 1.618);
+          // get all records and rewrite everything
+          throw new Error(`implement record length update`);
+        }
+
+
+      let slotPosition = getEmptySlot(fd, recordId, newRecordLength);
+      if ( slotPosition > 0 ) {
+        fs.write(fd, record, 0, newRecordLength, slotPosition); 
+        fs.fdatasyncSync(fd);    // boss level
+      } else {
+        newSlotCount = Math.ceil(slotCount * 1.618);
+        // grab all records and rewrite everything
+      }
+
+
+    fs.closeSync(fd);
   }
 
-  function createRecord(path, fileName, recordId, keyString, valueString) {
-
+  function getEmptySlot(fd, recordId, recordLength) {
+    return -1;
   }
 
   function getRecord(path, fileName, recordId, keyString) {
@@ -227,3 +316,12 @@ export default StrongMapStaticAPI;
     console.log({value});
     return value;
   }
+
+  function newBlankSlot(len) {
+    let str = '';
+    for( let i = 0; i < len; i++ ) {
+      str += ' ';
+    }
+    return str;
+  }
+
