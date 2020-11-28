@@ -2,9 +2,9 @@
   "name": "node-strongmap",
   "version": "1.0.2",
   "description": "JavaScript Map meets your Hard Disk",
-  "main": "src/entry.js",
+  "main": "src/index.js",
   "scripts": {
-    "test": "node -r esm src/test.js"
+    "test": "node -r esm src/tests/run.js"
   },
   "repository": {
     "type": "git",
