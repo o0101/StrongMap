@@ -4,15 +4,19 @@ import Path from 'path';
 import {discohash} from 'bebb4185';
 import JSON36 from 'json36';
 
-const name = "StrongMap";
+const DEBUG = false;
+
+const VERSION = "1.0";
+const VERSION_STRING = "SMV" + VERSION;
+const INITIAL_RECORD_LENGTH = 128;
 const HashTable = Map; // could also be WeakMap
-const T = Symbol('[[Target]]');
-const P = Symbol('[[Proxy]]');
-const N = Symbol('[[Name]]');
 
 class StrongMap extends HashTable {};
 const GeneralFunction = function(...a) { return a; }
-const DEBUG = false;
+
+const T = Symbol('[[Target]]');
+const P = Symbol('[[Proxy]]');
+const N = Symbol('[[Name]]');
 
 // static APIHandler
   class StaticAPIHandler {
@@ -69,8 +73,10 @@ const DEBUG = false;
 
     // standard Map API methods
       set(key, value) {
-        const {path,fileName,recordId} = locate(key, this.handler);
-        console.log({path,fileName,recordId});
+        const {path,fileName,recordId, keyString} = locate(key, this.handler);
+        const valueString = JSON36.stringify(value);
+        console.log({path,fileName,recordId,keyString,valueString});
+        create(path,fileName,recordId,keyString,valueString);
         return this.target.set(key, value);  
       }
 
@@ -140,49 +146,84 @@ const StrongMapStaticAPI = new Proxy(StrongMap, new StaticAPIHandler());
 
 export default StrongMapStaticAPI;
 
-function locate(key, handler) {
-  const keyString = JSON36.stringify(key);
-  let name = handler[N];
+// record helpers
+  function locate(key, handler) {
+    const keyString = JSON36.stringify(key);
+    let name = handler[N];
 
-  if ( ! name ) {
-    name = handler[N] = newRandomName();
+    if ( ! name ) {
+      name = handler[N] = newRandomName();
+    }
+
+    const hash = discohash(keyString).toString(16).padStart(16, '0');
+    const parts = ['dicts', name, 'keys', hash.slice(0,2), hash.slice(2,4), hash.slice(4,6)];
+    const path = Path.resolve(...parts)
+    const fileName = `${hash.slice(6,11)}.dat`;
+    const recordId = parseInt(hash.slice(11,16), 16);
+
+    return {path, parts, fileName, recordId, keyString};
   }
 
-  const hash = discohash(keyString).toString(16).padStart(16, '0');
-  const parts = [name, 'keys', hash.slice(0,2), hash.slice(2,4), hash.slice(4,6)];
-  const path = Path.resolve(...parts)
-  const fileName = `${hash.slice(6,11)}.dat`;
-  const recordId = parseInt(hash.slice(11,16), 16);
-
-  return {path, parts, fileName, recordId};
-}
-
-function retrieve(path, fileName, recordId, key) {
-  const fullPath = Path.resolve(path, fileName);
-  if ( ! fs.existsSync(fullPath) ) {
-    return undefined; 
-  } else {
-    // open and read recordId from fileName and return it 
-  }
-}
-
-function create(path, fileName, recordId, key, value) {
-  const dirPath = Path.resolve(path);
-  const fullPath = Path.resolve(dirPath, fileName);
-  if ( ! fs.existsSync(dirPath) ) {
-    fs.mkdirSync(dirPath, {recursive:true}); 
+  function retrieve(path, fileName, recordId, keyString) {
+    const fullPath = Path.resolve(path, fileName);
+    if ( ! fs.existsSync(fullPath) ) {
+      return undefined; 
+    } else {
+      return getRecord(path, fileName, recordId, keyString);
+    }
   }
 
-  if ( ! fs.existsSync(fullPath) ) {
-    createEmptyRecordFile(fullPath);
+  function create(path, fileName, recordId, keyString, valueString) {
+    const dirPath = Path.resolve(path);
+    const fullPath = Path.resolve(dirPath, fileName);
+    if ( ! fs.existsSync(dirPath) ) {
+      fs.mkdirSync(dirPath, {recursive:true}); 
+    }
+
+    if ( ! fs.existsSync(fullPath) ) {
+      createEmptyRecordFile(fullPath);
+    }
+
+    createRecord(path, fileName, recordId, keyString, valueString);
   }
 
-  // open and write to recordFile
-}
+  function createEmptyRecordFile(fullPath, name) {
+    const SLOT_COUNT = 1;
+    const RECORD_COUNT = 0;
+    const recordLength = INITIAL_RECORD_LENGTH;
 
+    const header = [
+      VERSION_STRING,
+      name,
+      recordLength,
+      RECORD_COUNT,
+      SLOT_COUNT
+    ];
 
-function newRandomName() {
-  const value = (+new Date*Math.random()).toString(36);
-  console.log({value});
-  return value;
-}
+    const headerLine = header.join(' ');
+    const slotLine = newBlankSlot(recordLength);
+
+    // write the file
+  }
+
+  function newBlankSlot(len) {
+    let str = '';
+    for( let i = 0; i < len; i++ ) {
+      str += ' ';
+    }
+    return str;
+  }
+
+  function createRecord(path, fileName, recordId, keyString, valueString) {
+
+  }
+
+  function getRecord(path, fileName, recordId, keyString) {
+
+  }
+
+  function newRandomName() {
+    const value = (+new Date*Math.random()).toString(36);
+    console.log({value});
+    return value;
+  }
