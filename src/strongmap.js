@@ -221,7 +221,8 @@ export default StrongMapStaticAPI;
 
     // write the file
     const fd = fs.openSync(fullPath, 'ax', RECORD_MODE); 
-    fs.writeSync(fd, record, 0, record.length, );
+    fs.writeSync(fd, record, 0, record.length, 0);
+    // but actually we need to call fsync/fdatasync on the directory
     fs.fdatasyncSync(fd);    // boss level
     fs.closeSync(fd);
   }
