@@ -33,6 +33,11 @@ function typeTests() {
   const gamma = instance.get(alpha);
 
   console.log({alpha, beta, gamma});
+
+  instance.set(new Set([1]), {hi: new Map([['a', {b:2}]])});
+
+  console.log(instance.get(new Set([1])));
+
 }
 
 
