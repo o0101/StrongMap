@@ -20,6 +20,11 @@ const HASH_SHARDS = [
   [2,9],
   [9,16]
 ];
+const RECORD_ID_SHARD = HASH_SHARDS[HASH_SHARDS.length-1];
+const MIN_RECORD_ID = 0;
+const MAX_RECORD_ID = 16**(RECORD_ID_SHARD[1] - RECORD_ID_SHARD[0]);
+const RECORD_ID_RANGE = MAX_RECORD_ID - MIN_RECORD_ID;
+const FILE_PATHS = new Map();
 
 class StrongMap extends HashTable {};
 const GeneralFunction = function(...a) { return a; }
@@ -233,15 +238,19 @@ export default StrongMapStaticAPI;
 
     // write the file
     const fd = fs.openSync(fullPath, 'ax', RECORD_MODE); 
+    fs.fdatasyncSync(fd);    // boss level
+    FILE_PATHS.set(fd, fullPath);
     fs.writeSync(fd, record, 0, record.length, 0);
     // but actually we need to call fsync/fdatasync on the directory
     fs.fdatasyncSync(fd);    // boss level
     fs.closeSync(fd);
+    FILE_PATHS.delete(fd);
   }
 
   function createRecord(fullPath, recordId, keyString, valueString, handler) {
     const fd = fs.openSync(fullPath, RECORD_OPEN_MODE);
     fs.fdatasyncSync(fd);    // boss level
+    FILE_PATHS.set(fd, fullPath);
 
     // check integrity and extract header information
       const PossibleRecordLength = INITIAL_RECORD_LENGTH;
@@ -303,21 +312,77 @@ export default StrongMapStaticAPI;
         }
 
 
-      let slotPosition = getEmptySlot(fd, recordId, newRecordLength);
+      let slotPosition = getEmptySlot(fd, recordId, newRecordLength, recordCount, slotCount);
+
       if ( slotPosition > 0 ) {
         fs.write(fd, record, 0, newRecordLength, slotPosition); 
         fs.fdatasyncSync(fd);    // boss level
       } else {
         newSlotCount = Math.ceil(slotCount * 1.618);
-        // grab all records and rewrite everything
+        // grab all records, and emptyy slots, 
+        // map these into a higher space with more empty slots
+        // and call try to write our record again
+        // repeat until we can write it
       }
 
-
     fs.closeSync(fd);
+    FILE_PATHS.delete(fd);
   }
 
-  function getEmptySlot(fd, recordId, recordLength) {
+  // something like interpolation search
+  function getEmptySlot(fd, recordId, recordLength, total_records, total_slots) {
+    const expectedSlotIndex = Math.floor((recordId-MIN_RECORD_ID)/RECORD_ID_RANGE*total_slots);
+    const probabilityFree = 1-(total_records/total_slots);
+    const expectedSlotPosition = recordLength /* for header */ + expectedSlotIndex*recordLength;
+
+    let nextGuess = expectedSlotPosition;
+
+    // allow the guess + 2 probes higher
+    for( let i = 0; i < 3; i++ ) {
+      const is = isSlotEmpty(fd, nextGuess);
+
+      if ( is.eof ) {
+        // some sort of error, but we need to expand record
+        DEBUG && console.warn("File should not be end of file at this point", {
+          recordId, 
+          recordLength, 
+          total_records, 
+          total_slots,
+          path: getPath(fd)
+        });
+        return -1;
+      } 
+
+      if ( is.free ) {
+        DEBUG && console.info("Slot free", {recordId, nextGuess});
+        return nextGuess;
+      } else {
+        DEBUG && console.info("Slot taken", {recordId, nextGuess});
+      }
+
+      nextGuess += recordLength;
+    }
+
     return -1;
+  }
+
+  function getPath(fd) {
+    return FILE_PATHS.get(fd);
+  }
+
+  function isSlotEmpty(fd, pos) {
+    const checkBuffer = Buffer.alloc(1);
+    const numRead = fs.readSync(fd,checkBuffer,0,1,pos);
+
+    const checkStr = checkBuffer.toString();
+    if ( numRead === 0 ) {
+      return {eof:true};
+    }
+    if ( checkStr === ' ' ) {
+      return {free:true};
+    } else {
+      return {free:false};
+    }
   }
 
   function getRecord(path, fileName, recordId, keyString) {
