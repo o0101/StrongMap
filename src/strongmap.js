@@ -14,6 +14,12 @@ const RECORD_MODE = 0o600;
 const HashTable = Map; // could also be WeakMap
 const {O_RDWR, O_NOATIME, O_NOFOLLOW, O_DSYNC, O_DIRECT} = fs.constants;
 const RECORD_OPEN_MODE = O_RDWR | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
+const HASH_SHARDS = [
+  [0,1],
+  [1,2],
+  [2,9],
+  [9,16]
+];
 
 class StrongMap extends HashTable {};
 const GeneralFunction = function(...a) { return a; }
@@ -166,10 +172,16 @@ export default StrongMapStaticAPI;
     const keyString = JSON36.stringify(key);
     const name = getName(handler);
     const hash = discohash(keyString).toString(16).padStart(16, '0');
-    const parts = ['dicts', name, 'keys', hash.slice(0,2), hash.slice(2,4), hash.slice(4,6)];
+    const parts = [
+      'dicts', 
+      name, 
+      'keys', 
+      hash.slice(...HASH_SHARDS[0]), 
+      hash.slice(...HASH_SHARDS[1]), 
+    ];
     const path = Path.resolve(...parts)
-    const fileName = `${hash.slice(6,11)}.dat`;
-    const recordId = parseInt(hash.slice(11,16), 16);
+    const fileName = `${hash.slice(...HASH_SHARDS[2])}.dat`;
+    const recordId = parseInt(hash.slice(...HASH_SHARDS[3]), 16);
 
     return {path, parts, fileName, recordId, keyString};
   }

@@ -42,4 +42,14 @@ Or had billions of files in a directory.
 Keeping files relatively small, directories relatively small, and files and directories relatively few, gives better performance at scale on almost all filesystems. This is important since we don't want to care what filesystem we are on.
 
 
+## Revision 2
 
+I can get better performance with the following:
+
+16 layer 1 directories
+
+16 layer 2 directories
+
+256 million files per directory
+
+256 million records per file
