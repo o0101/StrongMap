@@ -23,6 +23,16 @@ function typeTests() {
   console.log({get:instance.get(1)});
 
   console.log(instance);
+
+  const alpha = {alpha:[1,2,3]};
+
+  const beta = {happy:"CRIS", yes:[999,2.12e-94]};
+
+  instance.set(alpha, beta);
+
+  const gamma = instance.get(alpha);
+
+  console.log({alpha, beta, gamma});
 }
 
 
