@@ -5,6 +5,7 @@ typeTests();
 
 function typeTests() {
   const instance = new StrongMap();
+  instance.name('happy-test');
   const minstance = new Map();
 
   const typeMap = instance instanceof Map;

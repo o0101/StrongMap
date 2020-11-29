@@ -4,7 +4,7 @@ import Path from 'path';
 import {discohash} from 'bebb4185';
 import JSON36 from 'json36';
 
-const DEBUG = false;
+const DEBUG = true;
 
 const MAGIC_PREFIX = "SMV";
 const VERSION = "1.0";
@@ -26,7 +26,9 @@ const MAX_RECORD_ID = 16**(RECORD_ID_SHARD[1] - RECORD_ID_SHARD[0]);
 const RECORD_ID_RANGE = MAX_RECORD_ID - MIN_RECORD_ID;
 const FILE_PATHS = new Map();
 
-class StrongMap extends HashTable {};
+class StrongMap extends HashTable {
+  name() {}
+}
 const GeneralFunction = function(...a) { return a; }
 
 const T = Symbol('[[Target]]');
@@ -151,7 +153,7 @@ const N = Symbol('[[Name]]');
             this[T] = prop;
             // return the func call proxy;
             return this[P];
-          }
+          } 
           return target[prop];
           break;
       }
@@ -240,7 +242,10 @@ export default StrongMapStaticAPI;
     const fd = fs.openSync(fullPath, 'ax', RECORD_MODE); 
     fs.fdatasyncSync(fd);    // boss level
     FILE_PATHS.set(fd, fullPath);
-    fs.writeSync(fd, record, 0, record.length, 0);
+    const bytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
+
+    DEBUG && console.log({bytesWritten, fd, path:getPath(fd)});
+
     // but actually we need to call fsync/fdatasync on the directory
     fs.fdatasyncSync(fd);    // boss level
     fs.closeSync(fd);
@@ -290,14 +295,19 @@ export default StrongMapStaticAPI;
 
       slotCount = newSlotCount = parseInt(SLOT_COUNT);
       recordCount = newRecordCount = parseInt(RECORD_COUNT);
-      recordLength = newRecordLength = parseInt(recordLength);
+      recordLength = newRecordLength = parseInt(RECORD_LENGTH);
 
     // write the record
-      const record = [
-        recordId,
-        keyString,
-        valueString
-      ].join(' ').padEnd(recordLength-1, ' ') + '\n';
+      const record = Buffer.from(
+        [
+          recordId,
+          keyString,
+          valueString
+        ]
+        .join(' ')
+        .padEnd(recordLength-1, ' ') 
+        + '\n'
+      );
 
       // check length is OK
         if ( record.length > recordLength ) {
@@ -309,14 +319,17 @@ export default StrongMapStaticAPI;
           newRecordLength = Math.ceil(record.length * 1.618);
           // get all records and rewrite everything
           throw new Error(`implement record length update`);
+        } else {
+          newRecordLength = recordLength;
         }
-
 
       let slotPosition = getEmptySlot(fd, recordId, newRecordLength, recordCount, slotCount);
 
+      console.log({slotPosition});
       if ( slotPosition > 0 ) {
-        fs.write(fd, record, 0, newRecordLength, slotPosition); 
+        const bytesWritten = fs.writeSync(fd, record, 0, newRecordLength, slotPosition); 
         fs.fdatasyncSync(fd);    // boss level
+        console.log({bytesWritten, record, file: getPath(fd)});
       } else {
         newSlotCount = Math.ceil(slotCount * 1.618);
         // grab all records, and emptyy slots, 
@@ -337,6 +350,7 @@ export default StrongMapStaticAPI;
 
     let nextGuess = expectedSlotPosition;
 
+    DEBUG && console.log({fd,recordId,recordLength,total_records,total_slots,expectedSlotIndex,probabilityFree, expectedSlotPosition,nextGuess});
     // allow the guess + 2 probes higher
     for( let i = 0; i < 3; i++ ) {
       const is = isSlotEmpty(fd, nextGuess);
