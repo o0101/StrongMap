@@ -96,7 +96,8 @@ const N = Symbol('[[Name]]');
         const valueString = JSON36.stringify(value);
         DEBUG && console.log({path,fileName,recordId,keyString,valueString});
         const result = create(path,fileName,recordId,keyString,valueString, this.handler);
-        return this.target.set(key, value);  
+        // make apply return the Proxy
+        return this.target;
       }
 
       has(key) {
@@ -144,7 +145,10 @@ const N = Symbol('[[Name]]');
       }
 
       delete(key) {
-
+        const {path,fileName,recordId, keyString} = locate(key, this.handler);
+        DEBUG && console.log({path,fileName,recordId,keyString});
+        const result = remove(path,fileName,recordId,keyString,this.handler);
+        return result;
       }
 
       get [Symbol.iterator]() {
@@ -248,7 +252,21 @@ export default StrongMapStaticAPI;
       createEmptyRecordFile(fullPath, handler);
     }
 
-    createRecord(fullPath, recordId, keyString, valueString, handler);
+    return createRecord(fullPath, recordId, keyString, valueString, handler);
+  }
+
+  function remove(path, fileName, recordId, keyString, handler) {
+    const dirPath = Path.resolve(path);
+    const fullPath = Path.resolve(dirPath, fileName);
+    if ( ! fs.existsSync(dirPath) ) {
+      return false;
+    }
+
+    if ( ! fs.existsSync(fullPath) ) {
+      return false;
+    }
+
+    removeRecord(fullPath, recordId, keyString, handler);
   }
 
   function createEmptyRecordFile(fullPath, handler) {
@@ -291,6 +309,7 @@ export default StrongMapStaticAPI;
     const fd = fs.openSync(fullPath, RECORD_OPEN_MODE);
     fs.fdatasyncSync(fd);    // boss level
     FILE_PATHS.set(fd, fullPath);
+    let result;
 
     // check integrity and extract header information
       const PossibleRecordLength = INITIAL_RECORD_LENGTH;
@@ -358,23 +377,142 @@ export default StrongMapStaticAPI;
           newRecordLength = recordLength;
         }
 
-      let slotPosition = getSlot(fd, recordId, newRecordLength, recordCount, slotCount, true);
+      const slot = getSlot(fd, recordId, newRecordLength, recordCount, slotCount, true);
 
-      DEBUG && console.log({slotPosition});
-      if ( slotPosition > 0 ) {
-        const bytesWritten = fs.writeSync(fd, record, 0, newRecordLength, slotPosition); 
+      DEBUG && console.log({slot});
+      if ( slot.position > 0 ) {
+        const bytesWritten = fs.writeSync(fd, record, 0, newRecordLength, slot.position); 
         fs.fdatasyncSync(fd);    // boss level
-        console.log({bytesWritten, record, file: getPath(fd)});
+        DEBUG && console.log({bytesWritten, record, file: getPath(fd)});
+        if ( bytesWritten === newRecordLength ) {
+          result = true;
+        } else {
+          console.warn(`Error writing record`, {
+            recordId, record, slotPosition, recordCount, 
+            slotCount, path: getPath(fd)
+          });
+          throw new Error(`Error writing record ${recordId}`);
+        }
       } else {
         newSlotCount = Math.ceil(slotCount * 1.618);
         // grab all records, and emptyy slots, 
         // map these into a higher space with more empty slots
         // and call try to write our record again
         // repeat until we can write it
+
+        throw new Error(`Implement add more slots`);
       }
+
+    if ( result ) {
+      if ( slot.nomatch ) {
+        recordCount += 1;
+      }
+      Header[3] = recordCount;
+      const HeaderLine = Header.join(' ').padEnd(recordLength-1, ' ') + '\n';
+      const bytesWritten = fs.writeSync(fd, HeaderLine, 0, newRecordLength, 0); 
+      fs.fdatasyncSync(fd);    // boss level
+    }
 
     fs.closeSync(fd);
     FILE_PATHS.delete(fd);
+  }
+
+  function removeRecord(fullPath, recordId, keyString, handler) {
+    const fd = fs.openSync(fullPath, RECORD_OPEN_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+    FILE_PATHS.set(fd, fullPath);
+
+    let result;
+
+    // check integrity and extract header information
+      const PossibleRecordLength = INITIAL_RECORD_LENGTH;
+      const HeaderBuf = Buffer.alloc(PossibleRecordLength);
+
+      fs.readSync(fd, HeaderBuf, 0, PossibleRecordLength, 0);
+      fs.fdatasyncSync(fd);    // boss level
+
+      const dictName = getName(handler);
+
+      const Header = HeaderBuf.toString().split(/\s+/g);
+      const [ 
+        VERSION_STRING,
+        name,
+        RECORD_LENGTH,
+        RECORD_COUNT,
+        SLOT_COUNT
+      ] = Header;
+
+      // we don't actually check version number (for now)
+      if ( !VERSION_STRING.startsWith(MAGIC_PREFIX) ) {
+        console.warn({
+          fullPath, recordId, dictName, VERSION_STRING, name, Header
+        });
+        throw new TypeError('Incorrect header in record');
+      }
+
+      if ( name !== dictName ) {
+        console.warn({
+          fullPath, recordId, dictName, VERSION_STRING, name, Header
+        });
+        throw new TypeError('Incorrect dict name in record');
+      }
+
+      let slotCount, recordCount, recordLength;
+      let newSlotCount, newRecordCount, newRecordLength;
+
+      slotCount = newSlotCount = parseInt(SLOT_COUNT);
+      recordCount = newRecordCount = parseInt(RECORD_COUNT);
+      recordLength = newRecordLength = parseInt(RECORD_LENGTH);
+
+    // write the record
+      const record = Buffer.from(newBlankSlot(recordLength-1) + '\n');
+
+      // check length is OK
+        if ( record.length > recordLength ) {
+          DEBUG && console.info(`Update record length: ${JSON.stringify({
+            newRecordLengthAtLeast: record.length,
+            recordLength
+          })}`);
+
+          newRecordLength = Math.ceil(record.length * 1.618);
+          // get all records and rewrite everything
+          throw new Error(`implement record length update`);
+        } else {
+          newRecordLength = recordLength;
+        }
+
+      const slot = getSlot(fd, recordId, newRecordLength, recordCount, slotCount, true);
+
+      DEBUG && console.log({slot});
+      if ( slot.position > 0 && slot.match ) {
+        const bytesWritten = fs.writeSync(fd, record, 0, newRecordLength, slot.position); 
+        fs.fdatasyncSync(fd);    // boss level
+        DEBUG && console.log({bytesWritten, record, file: getPath(fd)});
+        if ( bytesWritten === newRecordLength ) {
+          result = true;
+        } else {
+          console.warn(`Error deleting record`, {
+            recordId, record, slot, recordCount, 
+            slotCount, path: getPath(fd)
+          });
+          throw new Error(`Error deleting record ${recordId}`);
+        }
+      } else {
+        result = false;
+      }
+
+    if ( result ) {
+      recordCount -= 1;
+      Header[3] = recordCount;
+      const HeaderLine = Header.join(' ').padEnd(recordLength-1, ' ') + '\n';
+      const bytesWritten = fs.writeSync(fd, HeaderLine, 0, newRecordLength, 0); 
+      fs.fdatasyncSync(fd);    // boss level
+    }
+
+    fs.closeSync(fd);
+    FILE_PATHS.delete(fd);
+
+    return result;
   }
 
   // something like interpolation search
@@ -400,35 +538,35 @@ export default StrongMapStaticAPI;
           total_slots,
           path: getPath(fd)
         });
-        return -1;
+        return {nomatch:true, position:-1};
       } 
 
       if ( is.free ) {
         DEBUG && console.info("Slot free", {recordId, nextGuess});
         if ( emptyPosOnly ) {
-          return nextGuess;
+          return {nomatch:true, position:nextGuess};
         } else {
           return undefined;
         }
       } else {
-        if ( ! emptyPosOnly ) {
-          DEBUG && console.info("Retrieving slot", {recordId, at: nextGuess});
-          const readBuffer = Buffer.alloc(recordLength);
-          const bytesRead = fs.readSync(fd, readBuffer, 0, MAX_RECORDID_LENGTH, nextGuess);
-          let readString = readBuffer.toString('utf8', 0, MAX_RECORDID_LENGTH);
-          if ( bytesRead !== MAX_RECORDID_LENGTH ) {
-            DEBUG && console.info({
-              bytesRead,
-              readData: readBuffer.toString(), 
-              at: nextGuess,
-              recordId, 
-              recordLength, 
-              total_records, 
-              total_slots,
-              path: getPath(fd)
-            });
-            throw new Error(`Corruption at slot ${recordId} at position ${nextGuess}`);
-          } else if ( readString.startsWith(recordId+'') ) {
+        DEBUG && console.info("Retrieving slot", {recordId, at: nextGuess});
+        const readBuffer = Buffer.alloc(recordLength);
+        const bytesRead = fs.readSync(fd, readBuffer, 0, MAX_RECORDID_LENGTH, nextGuess);
+        let readString = readBuffer.toString('utf8', 0, MAX_RECORDID_LENGTH);
+        if ( bytesRead !== MAX_RECORDID_LENGTH ) {
+          DEBUG && console.info({
+            bytesRead,
+            readData: readBuffer.toString(), 
+            at: nextGuess,
+            recordId, 
+            recordLength, 
+            total_records, 
+            total_slots,
+            path: getPath(fd)
+          });
+          throw new Error(`Corruption at slot ${recordId} at position ${nextGuess}`);
+        } else if ( readString.startsWith(recordId+'') ) {
+          if ( ! emptyPosOnly ) {
             if ( fullValue ) {
               const remainingBytesToRead = recordLength-MAX_RECORDID_LENGTH;
               const secondBytesRead = fs.readSync(fd, readBuffer, MAX_RECORDID_LENGTH, remainingBytesToRead, nextGuess+MAX_RECORDID_LENGTH);
@@ -451,10 +589,10 @@ export default StrongMapStaticAPI;
               return true;
             }
           } else {
-            // didn't find it yet, keep probing
+            return {match:true, position:nextGuess};
           }
         } else {
-          DEBUG && console.info("Slot taken", {recordId, nextGuess});
+          DEBUG && console.info("Slot taken but not matching recordId", {recordId, nextGuess});
         }
       }
 
@@ -462,7 +600,7 @@ export default StrongMapStaticAPI;
     }
 
     if ( emptyPosOnly ) {
-      return -1;
+      return {nomatch:true, position:-1};
     } else {
       if ( fullValue ) {
         return undefined;

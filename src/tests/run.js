@@ -34,9 +34,13 @@ function typeTests() {
 
   console.log({alpha, beta, gamma});
 
-  instance.set(new Set([1]), {hi: new Map([['a', {b:2}]])});
+  instance.set(new Set([1]), {hi: new Map([['a', {b:2}]])}).set(1,2);
 
   console.log(instance.get(new Set([1])));
+
+  instance.delete(1);
+
+  console.log(instance.get(1));
 
 }
 
