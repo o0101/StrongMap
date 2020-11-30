@@ -153,16 +153,22 @@ const N = Symbol('[[Name]]');
         return result;
       }
 
-      keys() {
-
+      *keys() {
+        for( const [key, value] of this.entries() ) {
+          yield key;
+        }
       }
 
-      values() {
-
+      *values() {
+        for( const [key, value] of this.entries() ) {
+          yield value;
+        }
       }
 
-      entries() {
-
+      *entries() {
+        for( const [key, value] of streamEntries(this.handler) ) {
+          yield [key, value];
+        }
       }
 
     // standard Map API altered for our call semantics
@@ -239,12 +245,33 @@ export default StrongMapStaticAPI;
     return {path, parts, fileName, recordId, keyString, hash, entryFile};
   }
 
-  function retrieve(path, fileName, recordId, keyString, handler, fullRecord = false) {
+  function locateFromHash(hash, handler) {
+    const name = getName(handler);
+    const parts = [
+      'dicts', 
+      name, 
+      'keys', 
+      hash.slice(...HASH_SHARDS[0]), 
+      hash.slice(...HASH_SHARDS[1]), 
+    ];
+    const path = Path.resolve(...parts)
+    const fileName = `${hash.slice(...HASH_SHARDS[2])}.dat`;
+    const recordId = parseInt(hash.slice(...HASH_SHARDS[3]), 16);
+
+    return {path, parts, fileName, recordId};
+  }
+
+  function retrieve(path, fileName, recordId, keyString, handler, 
+      fullRecord = false, showEmpty = false) {
     const fullPath = Path.resolve(path, fileName);
     if ( ! fs.existsSync(fullPath) ) {
-      return undefined; 
+      if ( showEmpty ) {
+        return {empty:true};
+      } else {
+        return undefined; 
+      }
     } else {
-      return getRecord(fullPath, recordId, keyString, handler, fullRecord);
+      return getRecord(fullPath, recordId, keyString, handler, fullRecord, showEmpty);
     }
   }
 
@@ -639,7 +666,7 @@ export default StrongMapStaticAPI;
     }
   }
 
-  function getRecord(fullPath, recordId, keyString, handler, fullRecord) {
+  function getRecord(fullPath, recordId, keyString, handler, fullRecord, showEmpty) {
     let result;
     let recordExists;
 
@@ -692,6 +719,9 @@ export default StrongMapStaticAPI;
     fs.closeSync(fd);
     FILE_PATHS.delete(fd);
 
+    if ( result === undefined && showEmpty ) {
+      return {empty: true}; 
+    }
     return result;
   }
 
@@ -710,7 +740,8 @@ export default StrongMapStaticAPI;
   }
 
   function addEntry(keyString, handler) {
-    const {hash,entryFile} = locate(keyString, handler);
+    const key = JSON36.parse(keyString);
+    const {hash,entryFile} = locate(key, handler);
      
     if ( ! fs.existsSync(entryFile) ) {
       createEntryFile(entryFile, handler);
@@ -731,7 +762,8 @@ export default StrongMapStaticAPI;
     const [
       magic,
       name, 
-      RECORD_COUNT
+      RECORD_COUNT,
+      LINE_COUNT
     ] = Header.toString().split(/\s+/g);
 
     if ( magic !== VERSION_STRING ) {
@@ -745,13 +777,19 @@ export default StrongMapStaticAPI;
     }
 
     const recordCount = parseInt(RECORD_COUNT);
+    const lineCount = parseInt(LINE_COUNT);
 
     if ( Number.isNaN(recordCount) ) {
       console.warn({name, entryFile, hash, recordCount, headerRead: Header.toString()});
       throw new TypeError(`Corrupt entry file: record count is not a number`);
     }
 
-    const writePosition = ENTRY_FILE_HEADER_LENGTH+recordCount*(HASH_LENGTH+1) 
+    if ( Number.isNaN(lineCount) ) {
+      console.warn({name, entryFile, hash, lineCount, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: line count is not a number`);
+    }
+
+    const writePosition = ENTRY_FILE_HEADER_LENGTH+lineCount*(HASH_LENGTH+1) 
 
     // write the entry
     const bytesWritten = fs.writeSync(fd, hash+'\n', writePosition);
@@ -763,11 +801,13 @@ export default StrongMapStaticAPI;
     // update the header
     fs.fdatasyncSync(fd);    // boss level
     const newRecordCount = recordCount + 1;
+    const newLineCount = lineCount + 1;
 
     const header = [
       VERSION_STRING,
       name,
-      newRecordCount
+      newRecordCount,
+      newLineCount
     ];
 
     const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
@@ -787,7 +827,8 @@ export default StrongMapStaticAPI;
   }
 
   function removeEntry(keyString, handler) {
-    const {hash,entryFile} = locate(keyString, handler);
+    const key = JSON36.parse(keyString);
+    const {hash,entryFile} = locate(key, handler);
      
     const fd = fs.openSync(entryFile, RECORD_OPEN_MODE);
     fs.fdatasyncSync(fd);    // boss level
@@ -804,7 +845,8 @@ export default StrongMapStaticAPI;
     const [
       magic,
       name, 
-      RECORD_COUNT
+      RECORD_COUNT,
+      LINE_COUNT
     ] = Header.toString().split(/\s+/g);
 
     if ( magic !== VERSION_STRING ) {
@@ -829,7 +871,8 @@ export default StrongMapStaticAPI;
     const header = [
       VERSION_STRING,
       name,
-      newRecordCount
+      newRecordCount,
+      LINE_COUNT
     ];
 
     const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
@@ -850,12 +893,14 @@ export default StrongMapStaticAPI;
 
   function createEntryFile(entryFile, handler) {
     const RECORD_COUNT = 0;
+    const LINE_COUNT = 0;
     const name = getName(handler);
 
     const header = [
       VERSION_STRING,
       name,
       RECORD_COUNT,
+      LINE_COUNT
     ];
 
     const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
@@ -919,4 +964,89 @@ export default StrongMapStaticAPI;
     fs.closeSync(fd);
 
     return recordCount;
+  }
+
+  function *streamEntries(handler) {
+    const {entryFile} = locate('', handler);
+     
+    if ( ! fs.existsSync(entryFile) ) {
+      createEntryFile(entryFile, handler);
+    }
+
+    const fd = fs.openSync(entryFile, RECORD_READ_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+
+    const Header = Buffer.alloc(ENTRY_FILE_HEADER_LENGTH);
+
+    const bytesRead = fs.readSync(fd, Header, 0, ENTRY_FILE_HEADER_LENGTH, 0);
+
+    if ( bytesRead !== ENTRY_FILE_HEADER_LENGTH ) {
+      console.warn({bytesRead, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Error reading entry file`);
+    }
+
+    const [
+      magic,
+      name, 
+      RECORD_COUNT
+    ] = Header.toString().split(/\s+/g);
+
+    if ( magic !== VERSION_STRING ) {
+      console.warn({name, magic, VERSION_STRING, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: magic prefix doesn't match version string`);
+    }
+
+    if ( name !== getName(handler) ) {
+      console.warn({name, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: name doesn't match dict name`);
+    }
+
+    const recordCount = parseInt(RECORD_COUNT);
+
+    if ( Number.isNaN(recordCount) ) {
+      console.warn({name, entryFile, hash, recordCount, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: record count is not a number`);
+    }
+
+    const HashBuffer = Buffer.alloc(HASH_LENGTH);
+    let readBytes;
+    let nextPosition = ENTRY_FILE_HEADER_LENGTH;
+    DEBUG && console.log({nextPosition});
+    while((readBytes = fs.readSync(fd, HashBuffer, 0, HASH_LENGTH, nextPosition)) === HASH_LENGTH) {
+      fs.fsyncSync(fd);       // boss level
+      const hash = HashBuffer.toString(); 
+      const {empty, key,value} = getRecordFromHash(hash, handler);
+      if ( !empty ) {
+        yield [key, value];
+      } else {
+        DEBUG && console.log({hashEmpty:empty, hash});
+      }
+      nextPosition += HASH_LENGTH + 1;
+      DEBUG && console.log({nextPosition});
+    }
+
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
+
+    return recordCount;
+  }
+
+  function getRecordFromHash(hash, handler) {
+    const {path,fileName,recordId} = locateFromHash(hash, handler);
+    DEBUG && console.log({path,fileName,recordId});
+    const result = retrieve(path, fileName, recordId, undefined, handler, true, true)
+    if ( result.empty ) {
+      return {empty: true};
+    } else {
+      const [
+        RecordIdStr,
+        KeyString,
+        ValueString
+      ] = result.split(/\s+/g);
+
+      const key = JSON36.parse(KeyString);
+      const value = JSON36.parse(ValueString);
+
+      return {key,value};
+    }
   }

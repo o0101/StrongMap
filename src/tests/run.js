@@ -43,6 +43,10 @@ function typeTests() {
   console.log(instance.get(1));
 
   console.log(instance.size);
+
+  console.log([...instance.entries()]);
+  console.log([...instance.keys()]);
+  console.log([...instance.values()]);
 }
 
 
