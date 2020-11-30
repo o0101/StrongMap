@@ -9,12 +9,12 @@ const DEBUG = false;
 const MAGIC_PREFIX = "SMV";
 const VERSION = "1.0";
 const VERSION_STRING = MAGIC_PREFIX + VERSION;
-const INITIAL_RECORD_LENGTH = 256;
+const INITIAL_RECORD_LENGTH = 1024;
 const ENTRY_FILE_HEADER_LENGTH = 128;
 const RECORD_MODE = 0o600;
 const HashTable = Map; // could also be WeakMap
-const {O_RDWR, O_RDONLY, O_NOATIME, O_NOFOLLOW, O_DSYNC, O_DIRECT} = fs.constants;
-const RECORD_OPEN_MODE = O_RDWR | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
+const {O_CREATE, O_RDWR, O_RDONLY, O_NOATIME, O_NOFOLLOW, O_DSYNC, O_DIRECT} = fs.constants;
+const RECORD_OPEN_MODE = O_CREATE | O_RDWR | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
 const RECORD_READ_MODE = O_RDONLY | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
 const HASH_LENGTH = 16;
 const HASH_SHARDS = [
@@ -925,7 +925,18 @@ export default StrongMapStaticAPI;
     const record = Buffer.from(headerLine + '\n');
 
     // write the file
-    const fd = fs.openSync(entryFile, 'ax', RECORD_MODE); 
+    if ( ! fs.existsSync(Path.dirname(entryFile) ) ) {
+      fs.mkdirSync(Path.dirname(entryFile), {recursive:true});
+    }
+
+    let fd;
+
+    if ( ! fs.existsSync(entryFile) ) {
+      fd = fs.openSync(entryFile, 'ax', RECORD_MODE);
+    } else {
+      fd = fs.openSync(entryFile, RECORD_OPEN_MODE);
+    }
+
     fs.fdatasyncSync(fd);    // boss level
     const bytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
 
