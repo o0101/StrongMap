@@ -34,9 +34,10 @@ Nothing.
 
 ## Caveats
 
-- slow
+- very slow
 - inefficient
 - incomplete
+- buggy and leaky
 
 ## How to set the root directory for maps?
 
