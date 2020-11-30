@@ -35,5 +35,11 @@ Nothing.
 ## Caveats
 
 - slow
-- buggy
+- inefficient
+- incomplete
 
+## How to set the root directory for maps?
+
+```js
+map.root('path/to/where/i/store/my/dicts');
+```
