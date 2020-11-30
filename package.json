@@ -1,6 +1,6 @@
 {
   "name": "node-strongmap",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "JavaScript Map meets your Hard Disk",
   "main": "src/index.js",
   "scripts": {
