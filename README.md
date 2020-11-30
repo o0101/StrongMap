@@ -16,7 +16,8 @@ map.name('/dev/sda1`); // not smart
 ## Getting a named map?
 
 ```js
-const map = StrongMap.fromDisk('/dev/sda1');
+const map = StrongMap();
+map.name('/dev/sda1');
 // it's a map
 ```
 

@@ -32,12 +32,14 @@ const FILE_PATHS = new Map();
 
 class StrongMap extends HashTable {
   name() {}
+  root() {}
 }
 const GeneralFunction = function(...a) { return a; }
 
 const T = Symbol('[[Target]]');
 const P = Symbol('[[Proxy]]');
 const N = Symbol('[[Name]]');
+const R = Symbol('[[Root]]');
 
 // static APIHandler
   class StaticAPIHandler {
@@ -90,6 +92,10 @@ const N = Symbol('[[Name]]');
     // extended StrongMap specific methods
       name(name) {
         this.handler[N] = name;
+      }
+
+      root(root) {
+        this.handler[R] = root;
       }
 
     // standard Map API methods
@@ -225,11 +231,22 @@ export default StrongMapStaticAPI;
     return name;
   }
 
+  function getRoot(handler) {
+    let root = handler[R];
+
+    if ( ! root ) {
+      root = handler[R] = '.';
+    }
+
+    return root;
+  }
+
   function locate(key, handler) {
     const keyString = JSON36.stringify(key);
     const name = getName(handler);
     const hash = discohash(keyString).toString(16).padStart(16, '0');
     const parts = [
+      getRoot(handler),
       'dicts', 
       name, 
       'keys', 
@@ -240,7 +257,7 @@ export default StrongMapStaticAPI;
     const fileName = `${hash.slice(...HASH_SHARDS[2])}.dat`;
     const recordId = parseInt(hash.slice(...HASH_SHARDS[3]), 16);
 
-    const entryFile = Path.resolve('dicts', name, 'entries.dat');
+    const entryFile = Path.resolve(getRoot(handler), 'dicts', name, 'entries.dat');
 
     return {path, parts, fileName, recordId, keyString, hash, entryFile};
   }
@@ -248,6 +265,7 @@ export default StrongMapStaticAPI;
   function locateFromHash(hash, handler) {
     const name = getName(handler);
     const parts = [
+      getRoot(handler),
       'dicts', 
       name, 
       'keys', 
