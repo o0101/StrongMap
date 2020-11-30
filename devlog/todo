@@ -1,3 +1,5 @@
-- get reslotting to work
+- make entries key hash list to allow enumaeration
+- implement increase number of slots
+- implement increase slot length
 - make header (first line / record) shorter
 
