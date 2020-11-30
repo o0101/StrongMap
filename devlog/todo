@@ -1,3 +1,4 @@
+- optimize speed
 - implement increase number of slots
 - implement increase slot length
 - make header (first line / record) shorter
