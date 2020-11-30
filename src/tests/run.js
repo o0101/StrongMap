@@ -42,6 +42,7 @@ function typeTests() {
 
   console.log(instance.get(1));
 
+  console.log(instance.size);
 }
 
 

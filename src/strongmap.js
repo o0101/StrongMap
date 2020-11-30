@@ -4,22 +4,24 @@ import Path from 'path';
 import {discohash} from 'bebb4185';
 import JSON36 from 'json36';
 
-const DEBUG = true;
+const DEBUG = false;
 
 const MAGIC_PREFIX = "SMV";
 const VERSION = "1.0";
 const VERSION_STRING = MAGIC_PREFIX + VERSION;
 const INITIAL_RECORD_LENGTH = 256;
+const ENTRY_FILE_HEADER_LENGTH = 128;
 const RECORD_MODE = 0o600;
 const HashTable = Map; // could also be WeakMap
 const {O_RDWR, O_RDONLY, O_NOATIME, O_NOFOLLOW, O_DSYNC, O_DIRECT} = fs.constants;
 const RECORD_OPEN_MODE = O_RDWR | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
 const RECORD_READ_MODE = O_RDONLY | O_NOATIME | O_NOFOLLOW | O_DSYNC; 
+const HASH_LENGTH = 16;
 const HASH_SHARDS = [
   [0,1],
   [1,2],
   [2,9],
-  [9,16]
+  [9,HASH_LENGTH]
 ];
 const RECORD_ID_SHARD = HASH_SHARDS[HASH_SHARDS.length-1];
 const MIN_RECORD_ID = 0;
@@ -151,10 +153,6 @@ const N = Symbol('[[Name]]');
         return result;
       }
 
-      get [Symbol.iterator]() {
-        return this.entries();
-      }
-
       keys() {
 
       }
@@ -165,6 +163,11 @@ const N = Symbol('[[Name]]');
 
       entries() {
 
+      }
+
+    // standard Map API altered for our call semantics
+      [Symbol.iterator]() {
+        return this.entries();
       }
   }
 
@@ -186,6 +189,8 @@ const N = Symbol('[[Name]]');
     get (target, prop, receiver) {
       DEBUG && console.log(target, prop, receiver);
       switch(prop) {
+        case 'size':
+          return getSize(this);
         default:
           if ( target[prop] instanceof Function ) {
             // save the func name
@@ -229,7 +234,9 @@ export default StrongMapStaticAPI;
     const fileName = `${hash.slice(...HASH_SHARDS[2])}.dat`;
     const recordId = parseInt(hash.slice(...HASH_SHARDS[3]), 16);
 
-    return {path, parts, fileName, recordId, keyString};
+    const entryFile = Path.resolve('dicts', name, 'entries.dat');
+
+    return {path, parts, fileName, recordId, keyString, hash, entryFile};
   }
 
   function retrieve(path, fileName, recordId, keyString, handler, fullRecord = false) {
@@ -286,10 +293,10 @@ export default StrongMapStaticAPI;
 
     const headerLine = header.join(' ').padEnd(recordLength-1, ' ');
     const slotLine = newBlankSlot(recordLength-1);
-    const record = [
+    const record = Buffer.from([
       headerLine,
       slotLine
-    ].join('\n') + '\n';
+    ].join('\n') + '\n');
 
     // write the file
     const fd = fs.openSync(fullPath, 'ax', RECORD_MODE); 
@@ -406,6 +413,7 @@ export default StrongMapStaticAPI;
     if ( result ) {
       if ( slot.nomatch ) {
         recordCount += 1;
+        addEntry(keyString, handler);
       }
       Header[3] = recordCount;
       const HeaderLine = Header.join(' ').padEnd(recordLength-1, ' ') + '\n';
@@ -507,10 +515,12 @@ export default StrongMapStaticAPI;
       const HeaderLine = Header.join(' ').padEnd(recordLength-1, ' ') + '\n';
       const bytesWritten = fs.writeSync(fd, HeaderLine, 0, newRecordLength, 0); 
       fs.fdatasyncSync(fd);    // boss level
+      removeEntry(keyString, handler);
     }
 
     fs.closeSync(fd);
     FILE_PATHS.delete(fd);
+
 
     return result;
   }
@@ -687,7 +697,7 @@ export default StrongMapStaticAPI;
 
   function newRandomName() {
     const value = (+new Date*Math.random()).toString(36);
-    console.log({value});
+    DEBUG && console.log({value});
     return value;
   }
 
@@ -699,3 +709,214 @@ export default StrongMapStaticAPI;
     return str;
   }
 
+  function addEntry(keyString, handler) {
+    const {hash,entryFile} = locate(keyString, handler);
+     
+    if ( ! fs.existsSync(entryFile) ) {
+      createEntryFile(entryFile, handler);
+    }
+
+    const fd = fs.openSync(entryFile, RECORD_OPEN_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+
+    const Header = Buffer.alloc(ENTRY_FILE_HEADER_LENGTH);
+
+    const bytesRead = fs.readSync(fd, Header, 0, ENTRY_FILE_HEADER_LENGTH, 0);
+
+    if ( bytesRead !== ENTRY_FILE_HEADER_LENGTH ) {
+      console.warn({bytesRead, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Error reading entry file`);
+    }
+
+    const [
+      magic,
+      name, 
+      RECORD_COUNT
+    ] = Header.toString().split(/\s+/g);
+
+    if ( magic !== VERSION_STRING ) {
+      console.warn({name, magic, VERSION_STRING, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: magic prefix doesn't match version string`);
+    }
+
+    if ( name !== getName(handler) ) {
+      console.warn({name, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: name doesn't match dict name`);
+    }
+
+    const recordCount = parseInt(RECORD_COUNT);
+
+    if ( Number.isNaN(recordCount) ) {
+      console.warn({name, entryFile, hash, recordCount, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: record count is not a number`);
+    }
+
+    const writePosition = ENTRY_FILE_HEADER_LENGTH+recordCount*(HASH_LENGTH+1) 
+
+    // write the entry
+    const bytesWritten = fs.writeSync(fd, hash+'\n', writePosition);
+    if ( bytesWritten !== HASH_LENGTH+1 ) {
+      console.warn({bytesWritten, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Error writing entry file`);
+    }
+
+    // update the header
+    fs.fdatasyncSync(fd);    // boss level
+    const newRecordCount = recordCount + 1;
+
+    const header = [
+      VERSION_STRING,
+      name,
+      newRecordCount
+    ];
+
+    const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
+    const record = Buffer.from(headerLine + '\n');
+
+    const headerBytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
+    if ( headerBytesWritten !== ENTRY_FILE_HEADER_LENGTH) {
+      console.warn({
+        bytesWritten, entryFile, hash, 
+        newHeader: record.toString(), headerRead: Header.toString()
+      });
+      throw new TypeError(`Error writing entry file header`);
+    }
+
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
+  }
+
+  function removeEntry(keyString, handler) {
+    const {hash,entryFile} = locate(keyString, handler);
+     
+    const fd = fs.openSync(entryFile, RECORD_OPEN_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+
+    const Header = Buffer.alloc(ENTRY_FILE_HEADER_LENGTH);
+
+    const bytesRead = fs.readSync(fd, Header, 0, ENTRY_FILE_HEADER_LENGTH, 0);
+
+    if ( bytesRead !== ENTRY_FILE_HEADER_LENGTH ) {
+      console.warn({bytesRead, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Error reading entry file`);
+    }
+
+    const [
+      magic,
+      name, 
+      RECORD_COUNT
+    ] = Header.toString().split(/\s+/g);
+
+    if ( magic !== VERSION_STRING ) {
+      console.warn({name, magic, VERSION_STRING, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: magic prefix doesn't match version string`);
+    }
+
+    if ( name !== getName(handler) ) {
+      console.warn({name, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: name doesn't match dict name`);
+    }
+
+    const recordCount = parseInt(RECORD_COUNT);
+
+    if ( Number.isNaN(recordCount) ) {
+      console.warn({name, entryFile, hash, recordCount, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: record count is not a number`);
+    }
+
+    const newRecordCount = recordCount - 1;
+
+    const header = [
+      VERSION_STRING,
+      name,
+      newRecordCount
+    ];
+
+    const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
+    const record = Buffer.from(headerLine + '\n');
+
+    const headerBytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
+    if ( headerBytesWritten !== ENTRY_FILE_HEADER_LENGTH) {
+      console.warn({
+        bytesWritten, entryFile, hash, 
+        newHeader: record.toString(), headerRead: Header.toString()
+      });
+      throw new TypeError(`Error writing entry file header`);
+    }
+
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
+  }
+
+  function createEntryFile(entryFile, handler) {
+    const RECORD_COUNT = 0;
+    const name = getName(handler);
+
+    const header = [
+      VERSION_STRING,
+      name,
+      RECORD_COUNT,
+    ];
+
+    const headerLine = header.join(' ').padEnd(ENTRY_FILE_HEADER_LENGTH-1, ' ');
+    const record = Buffer.from(headerLine + '\n');
+
+    // write the file
+    const fd = fs.openSync(entryFile, 'ax', RECORD_MODE); 
+    fs.fdatasyncSync(fd);    // boss level
+    const bytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
+
+    DEBUG && console.log({bytesWritten, fd, path:getPath(fd)});
+
+    // but actually we need to call fsync/fdatasync on the directory
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
+  }
+
+  function getSize(handler) {
+    const {entryFile} = locate('', handler);
+     
+    if ( ! fs.existsSync(entryFile) ) {
+      createEntryFile(entryFile, handler);
+    }
+
+    const fd = fs.openSync(entryFile, RECORD_READ_MODE);
+    fs.fdatasyncSync(fd);    // boss level
+
+    const Header = Buffer.alloc(ENTRY_FILE_HEADER_LENGTH);
+
+    const bytesRead = fs.readSync(fd, Header, 0, ENTRY_FILE_HEADER_LENGTH, 0);
+
+    if ( bytesRead !== ENTRY_FILE_HEADER_LENGTH ) {
+      console.warn({bytesRead, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Error reading entry file`);
+    }
+
+    const [
+      magic,
+      name, 
+      RECORD_COUNT
+    ] = Header.toString().split(/\s+/g);
+
+    if ( magic !== VERSION_STRING ) {
+      console.warn({name, magic, VERSION_STRING, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: magic prefix doesn't match version string`);
+    }
+
+    if ( name !== getName(handler) ) {
+      console.warn({name, entryFile, hash, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: name doesn't match dict name`);
+    }
+
+    const recordCount = parseInt(RECORD_COUNT);
+
+    if ( Number.isNaN(recordCount) ) {
+      console.warn({name, entryFile, hash, recordCount, headerRead: Header.toString()});
+      throw new TypeError(`Corrupt entry file: record count is not a number`);
+    }
+
+    fs.fdatasyncSync(fd);    // boss level
+    fs.closeSync(fd);
+
+    return recordCount;
+  }
