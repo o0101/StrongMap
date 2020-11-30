@@ -940,8 +940,6 @@ export default StrongMapStaticAPI;
     fs.fdatasyncSync(fd);    // boss level
     const bytesWritten = fs.writeSync(fd, record, 0, record.length, 0);
 
-    console.log({bytesWritten});
-
     DEBUG && console.log({bytesWritten, fd, path:getPath(fd)});
 
     // but actually we need to call fsync/fdatasync on the directory
