@@ -6,6 +6,12 @@ JavaScript Map meets your Hard Disk
 
 [Like Map](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map)
 
+## Get
+
+```console
+$ npm i --save node-strongmap
+```
+
 ## Naming the map?
 
 ```js
